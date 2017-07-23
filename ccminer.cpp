@@ -251,6 +251,7 @@ Options:\n\
 			mjollnir    Mjollnircoin\n\
 			myr-gr      Myriad-Groestl\n\
 			neoscrypt   FeatherCoin, Phoenix, UFO...\n\
+			nightcap    ChanCoin\n\
 			nist5       NIST5 (TalkCoin)\n\
 			penta       Pentablake hash (5x Blake 512)\n\
 			quark       Quark\n\
@@ -2303,6 +2304,9 @@ static void *miner_thread(void *userdata)
 			break;
 		case ALGO_NEOSCRYPT:
 			rc = scanhash_neoscrypt(thr_id, &work, max_nonce, &hashes_done);
+			break;
+		case ALGO_NIGHTCAP:
+			rc = scanhash_nightcap(thr_id, &work, max_nonce, &hashes_done);	
 			break;
 		case ALGO_NIST5:
 			rc = scanhash_nist5(thr_id, &work, max_nonce, &hashes_done);

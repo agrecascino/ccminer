@@ -52,6 +52,7 @@ ccminer_SOURCES	= elist.h miner.h compat.h \
 			  quark/nist5.cu \
 			  quark/quarkcoin.cu quark/cuda_quark_compactionTest.cu \
 			  neoscrypt/neoscrypt.cpp neoscrypt/neoscrypt-cpu.c neoscrypt/cuda_neoscrypt.cu \
+			  nightcap/nightcap.cu \
 			  pentablake.cu skein.cu cuda_skeincoin.cu skein2.cpp zr5.cu \
 			  sha256/sha256d.cu sha256/cuda_sha256d.cu sha256/sha256t.cu sha256/cuda_sha256t.cu \
 			  sia/sia.cu sia/sia-rpc.cpp sph/blake2b.c \
