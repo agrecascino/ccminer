@@ -282,6 +282,7 @@ extern int scanhash_cryptolight(int thr_id, struct work* work, uint32_t max_nonc
 extern int scanhash_cryptonight(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_decred(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_deep(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
+extern int scanhash_equihash(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_keccak256(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_fresh(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_fugue256(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
@@ -310,6 +311,7 @@ extern int scanhash_skeincoin(int thr_id, struct work* work, uint32_t max_nonce,
 extern int scanhash_skein2(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_s3(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_timetravel(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
+extern int scanhash_tribus(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_bitcore(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
 extern int scanhash_vanilla(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done, int8_t blake_rounds);
 extern int scanhash_veltor(int thr_id, struct work* work, uint32_t max_nonce, unsigned long *hashes_done);
@@ -341,6 +343,7 @@ extern void free_cryptolight(int thr_id);
 extern void free_cryptonight(int thr_id);
 extern void free_decred(int thr_id);
 extern void free_deep(int thr_id);
+extern void free_equihash(int thr_id);
 extern void free_keccak256(int thr_id);
 extern void free_fresh(int thr_id);
 extern void free_fugue256(int thr_id);
@@ -368,6 +371,7 @@ extern void free_skeincoin(int thr_id);
 extern void free_skein2(int thr_id);
 extern void free_s3(int thr_id);
 extern void free_timetravel(int thr_id);
+extern void free_tribus(int thr_id);
 extern void free_bitcore(int thr_id);
 extern void free_vanilla(int thr_id);
 extern void free_veltor(int thr_id);
@@ -605,6 +609,7 @@ void cuda_clear_lasterror();
 #define CL_WHT  "\x1B[01;37m" /* white */
 
 extern void format_hashrate(double hashrate, char *output);
+extern void format_hashrate_unit(double hashrate, char *output, const char* unit);
 extern void applog(int prio, const char *fmt, ...);
 extern void gpulog(int prio, int thr_id, const char *fmt, ...);
 
@@ -680,6 +685,7 @@ struct stratum_ctx {
 	time_t tm_connected;
 
 	int rpc2;
+	int is_equihash;
 	int srvtime_diff;
 };
 
@@ -723,6 +729,8 @@ struct work {
 	/* pok getwork txs */
 	uint32_t tx_count;
 	struct tx txs[POK_MAX_TXS];
+	// zec solution
+	uint8_t extra[1388];
 };
 
 #define POK_BOOL_MASK 0x00008000
@@ -805,6 +813,15 @@ void stratum_free_job(struct stratum_ctx *sctx);
 
 bool rpc2_stratum_authorize(struct stratum_ctx *sctx, const char *user, const char *pass);
 
+bool equi_stratum_notify(struct stratum_ctx *sctx, json_t *params);
+bool equi_stratum_set_target(struct stratum_ctx *sctx, json_t *params);
+bool equi_stratum_submit(struct pool_infos *pool, struct work *work);
+bool equi_stratum_show_message(struct stratum_ctx *sctx, json_t *id, json_t *params);
+void equi_work_set_target(struct work* work, double diff);
+void equi_store_work_solution(struct work* work, uint32_t* hash, void* sol_data);
+int equi_verify_sol(void * const hdr, void * const sol);
+double equi_network_diff(struct work *work);
+
 void hashlog_remember_submit(struct work* work, uint32_t nonce);
 void hashlog_remember_scan_range(struct work* work);
 double hashlog_get_sharediff(char* jobid, int idnonce, double defvalue);
@@ -859,6 +876,7 @@ void applog_compare_hash(void *hash, void *hash_ref);
 void print_hash_tests(void);
 void bastionhash(void* output, const unsigned char* input);
 void blake256hash(void *output, const void *input, int8_t rounds);
+void blake2b_hash(void *output, const void *input);
 void blake2s_hash(void *output, const void *input);
 void bmw_hash(void *state, const void *input);
 void c11hash(void *output, const void *input);
@@ -895,6 +913,7 @@ void skein2hash(void *output, const void *input);
 void s3hash(void *output, const void *input);
 void timetravel_hash(void *output, const void *input);
 void bitcore_hash(void *output, const void *input);
+void tribus_hash(void *output, const void *input);
 void veltorhash(void *output, const void *input);
 void wcoinhash(void *state, const void *input);
 void whirlxHash(void *state, const void *input);

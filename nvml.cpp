@@ -310,6 +310,8 @@ int nvml_set_clocks(nvml_handle *nvmlh, int dev_id)
 	nvmlReturn_t rc;
 	uint32_t gpu_clk = 0, mem_clk = 0;
 	int n = nvmlh->cuda_nvml_device_id[dev_id];
+	//if (need_nvsettings) /* prefer later than init time */
+	//	nvs_set_clocks(dev_id);
 	if (n < 0 || n >= nvmlh->nvml_gpucount)
 		return -ENODEV;
 
@@ -395,6 +397,8 @@ int nvml_reset_clocks(nvml_handle *nvmlh, int dev_id)
 	nvmlReturn_t rc;
 	uint32_t gpu_clk = 0, mem_clk = 0;
 	int n = nvmlh->cuda_nvml_device_id[dev_id];
+	if (need_nvsettings)
+		nvs_reset_clocks(dev_id);
 	if (n < 0 || n >= nvmlh->nvml_gpucount)
 		return -ENODEV;
 
@@ -582,7 +586,7 @@ void nvml_print_device_info(int dev_id)
 	if (hnvml->nvmlDeviceGetClock) {
 		uint32_t gpu_clk = 0, mem_clk = 0;
 
-		fprintf(stderr, "------- Clocks -------\n");
+		// fprintf(stderr, "------- Clocks -------\n");
 
 		hnvml->nvmlDeviceGetClock(hnvml->devs[n], NVML_CLOCK_GRAPHICS, NVML_CLOCK_ID_APP_CLOCK_DEFAULT, &gpu_clk);
 		rc = hnvml->nvmlDeviceGetClock(hnvml->devs[n], NVML_CLOCK_MEM, NVML_CLOCK_ID_APP_CLOCK_DEFAULT, &mem_clk);

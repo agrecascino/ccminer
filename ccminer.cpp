@@ -44,6 +44,7 @@
 #include "algos.h"
 #include "sia/sia-rpc.h"
 #include "crypto/xmr-rpc.h"
+#include "equi/equihash.h"
 
 #include <cuda_runtime.h>
 
@@ -125,6 +126,7 @@ bool opt_trust_pool = false;
 uint16_t opt_vote = 9999;
 int num_cpus;
 int active_gpus;
+bool need_nvsettings = false;
 char * device_name[MAX_GPUS];
 short device_map[MAX_GPUS] = { 0 };
 long  device_sm[MAX_GPUS] = { 0 };
@@ -132,6 +134,7 @@ short device_mpcount[MAX_GPUS] = { 0 };
 uint32_t gpus_intensity[MAX_GPUS] = { 0 };
 uint32_t device_gpu_clocks[MAX_GPUS] = { 0 };
 uint32_t device_mem_clocks[MAX_GPUS] = { 0 };
+int32_t device_mem_offsets[MAX_GPUS] = { 0 };
 uint32_t device_plimit[MAX_GPUS] = { 0 };
 uint8_t device_tlimit[MAX_GPUS] = { 0 };
 int8_t device_pstate[MAX_GPUS] = { -1, -1 };
@@ -211,12 +214,20 @@ double opt_resume_rate = -1.;
 
 int opt_statsavg = 30;
 
+#define API_MCAST_CODE "FTW"
+#define API_MCAST_ADDR "224.0.0.75"
+
 // strdup on char* to allow a common free() if used
 static char* opt_syslog_pfx = strdup(PROGRAM_NAME);
 char *opt_api_bind = strdup("127.0.0.1"); /* 0.0.0.0 for all ips */
-char *opt_api_allow = NULL; /* unimplemented */
-int opt_api_remote = 0;
-int opt_api_listen = 4068; /* 0 to disable */
+int opt_api_port = 4068; /* 0 to disable */
+char *opt_api_allow = NULL;
+char *opt_api_groups = NULL;
+bool opt_api_mcast = false;
+char *opt_api_mcast_addr = strdup(API_MCAST_ADDR);
+char *opt_api_mcast_code = strdup(API_MCAST_CODE);
+char *opt_api_mcast_des = strdup("");
+int opt_api_mcast_port = 4068;
 
 bool opt_stratum_stats = false;
 
@@ -235,6 +246,7 @@ Options:\n\
 			c11/flax    X11 variant\n\
 			decred      Decred Blake256\n\
 			deep        Deepcoin\n\
+			equihash    Zcash Equihash\n\
 			dmd-gr      Diamond-Groestl\n\
 			fresh       Freshcoin (shavite 80)\n\
 			fugue256    Fuguecoin\n\
@@ -266,6 +278,7 @@ Options:\n\
 			skein2      Double Skein (Woodcoin)\n\
 			s3          S3 (1Coin)\n\
 			timetravel  Machinecoin permuted x8\n\
+			tribus      Denerius\n\
 			vanilla     Blake256-8 (VNL)\n\
 			veltor      Thorsriddle streebog\n\
 			whirlcoin   Old Whirlcoin (Whirlpool algo)\n\
@@ -317,7 +330,8 @@ Options:\n\
       --cpu-affinity    set process affinity to cpu core(s), mask 0x3 for cores 0 and 1\n\
       --cpu-priority    set process priority (default: 3) 0 idle, 2 normal to 5 highest\n\
   -b, --api-bind=port   IP:port for the miner API (default: 127.0.0.1:4068), 0 disabled\n\
-      --api-remote      Allow remote control, like pool switching\n\
+      --api-remote      Allow remote control, like pool switching, imply --api-allow=0/0\n\
+      --api-allow=...   IP/mask of the allowed api client(s), 0/0 for all\n\
       --max-temp=N      Only mine if gpu temp is less than specified value\n\
       --max-rate=N[KMG] Only mine if net hashrate is less than specified value\n\
       --max-diff=N      Only mine if net difficulty is less than specified value\n\
@@ -362,6 +376,13 @@ struct option options[] = {
 	{ "algo", 1, NULL, 'a' },
 	{ "api-bind", 1, NULL, 'b' },
 	{ "api-remote", 0, NULL, 1030 },
+	{ "api-allow", 1, NULL, 1031 },
+	{ "api-groups", 1, NULL, 1032 },
+	{ "api-mcast", 0, NULL, 1033 },
+	{ "api-mcast-addr", 1, NULL, 1034 },
+	{ "api-mcast-code", 1, NULL, 1035 },
+	{ "api-mcast-port", 1, NULL, 1036 },
+	{ "api-mcast-des", 1, NULL, 1037 },
 	{ "background", 0, NULL, 'B' },
 	{ "benchmark", 0, NULL, 1005 },
 	{ "cert", 1, NULL, 1001 },
@@ -543,6 +564,14 @@ void get_currentalgo(char* buf, int sz)
 	snprintf(buf, sz, "%s", algo_names[opt_algo]);
 }
 
+void format_hashrate(double hashrate, char *output)
+{
+	if (opt_algo == ALGO_EQUIHASH)
+		format_hashrate_unit(hashrate, output, "Sol/s");
+	else
+		format_hashrate_unit(hashrate, output, "H/s");
+}
+
 /**
  * Exit app
  */
@@ -579,6 +608,11 @@ void proper_exit(int reason)
 #endif
 	free(opt_syslog_pfx);
 	free(opt_api_bind);
+	if (opt_api_allow) free(opt_api_allow);
+	if (opt_api_groups) free(opt_api_groups);
+	free(opt_api_mcast_addr);
+	free(opt_api_mcast_code);
+	free(opt_api_mcast_des);
 	//free(work_restart);
 	//free(thr_info);
 	exit(reason);
@@ -614,6 +648,10 @@ static void calc_network_diff(struct work *work)
 	if (opt_algo == ALGO_LBRY) nbits = swab32(work->data[26]);
 	if (opt_algo == ALGO_DECRED) nbits = work->data[29];
 	if (opt_algo == ALGO_SIA) nbits = work->data[11]; // unsure if correct
+	if (opt_algo == ALGO_EQUIHASH) {
+		net_diff = equi_network_diff(work);
+		return;
+	}
 
 	uint32_t bits = (nbits & 0xffffff);
 	int16_t shift = (swab32(nbits) & 0xff); // 0x1c = 28
@@ -833,6 +871,17 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 				hashlog_remember_submit(&submit_work, submit_work.nonces[idnonce]);
 			stratum.job.shares_count++;
 		}
+		return true;
+	}
+
+	if (pool->type & POOL_STRATUM && stratum.is_equihash) {
+		struct work submit_work;
+		memcpy(&submit_work, work, sizeof(struct work));
+		//if (!hashlog_already_submittted(submit_work.job_id, submit_work.nonces[idnonce])) {
+			if (equi_stratum_submit(pool, &submit_work))
+				hashlog_remember_submit(&submit_work, submit_work.nonces[idnonce]);
+			stratum.job.shares_count++;
+		//}
 		return true;
 	}
 
@@ -1488,6 +1537,7 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	/* Generate merkle root */
 	switch (opt_algo) {
 		case ALGO_DECRED:
+		case ALGO_EQUIHASH:
 		case ALGO_SIA:
 			// getwork over stratum, no merkle to generate
 			break;
@@ -1546,6 +1596,13 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		memcpy(&work->data[44], &sctx->job.coinbase[sctx->job.coinbase_size-4], 4);
 		sctx->job.height = work->data[32];
 		//applog_hex(work->data, 180);
+	} else if (opt_algo == ALGO_EQUIHASH) {
+		memcpy(&work->data[9], sctx->job.coinbase, 32+32); // merkle [9..16] + reserved
+		work->data[25] = le32dec(sctx->job.ntime);
+		work->data[26] = le32dec(sctx->job.nbits);
+		memcpy(&work->data[27], sctx->xnonce1, sctx->xnonce1_size & 0x1F); // pool extranonce
+		work->data[35] = 0x80;
+		//applog_hex(work->data, 140);
 	} else if (opt_algo == ALGO_LBRY) {
 		for (i = 0; i < 8; i++)
 			work->data[9 + i] = be32dec((uint32_t *)merkle_root + i);
@@ -1598,7 +1655,7 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 
 	pthread_mutex_unlock(&stratum_work_lock);
 
-	if (opt_debug && opt_algo != ALGO_DECRED && opt_algo != ALGO_SIA) {
+	if (opt_debug && opt_algo != ALGO_DECRED && opt_algo != ALGO_EQUIHASH && opt_algo != ALGO_SIA) {
 		uint32_t utm = work->data[17];
 		if (opt_algo != ALGO_ZR5) utm = swab32(utm);
 		char *tm = atime2str(utm - sctx->srvtime_diff);
@@ -1635,6 +1692,9 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		case ALGO_KECCAK:
 		case ALGO_LYRA2:
 			work_set_target(work, sctx->job.diff / (128.0 * opt_difficulty));
+			break;
+		case ALGO_EQUIHASH:
+			equi_work_set_target(work, sctx->job.diff / opt_difficulty);
 			break;
 		default:
 			work_set_target(work, sctx->job.diff / opt_difficulty);
@@ -1810,6 +1870,9 @@ static void *miner_thread(void *userdata)
 		} else if (opt_algo == ALGO_CRYPTOLIGHT || opt_algo == ALGO_CRYPTONIGHT) {
 			nonceptr = (uint32_t*) (((char*)work.data) + 39);
 			wcmplen = 39;
+		} else if (opt_algo == ALGO_EQUIHASH) {
+			nonceptr = &work.data[EQNONCE_OFFSET]; // 27 is pool extranonce (256bits nonce space)
+			wcmplen = 4+32+32;
 		}
 
 		if (have_stratum) {
@@ -1942,6 +2005,10 @@ static void *miner_thread(void *userdata)
 			nonceptr[1] += 1;
 			nonceptr[2] |= thr_id;
 
+		} else if (opt_algo == ALGO_EQUIHASH) {
+			nonceptr[1]++;
+			nonceptr[1] |= thr_id << 24;
+			//applog_hex(&work.data[27], 32);
 		} else if (opt_algo == ALGO_WILDKECCAK) {
 			//nonceptr[1] += 1;
 		} else if (opt_algo == ALGO_SIA) {
@@ -1995,8 +2062,10 @@ static void *miner_thread(void *userdata)
 		}
 
 		/* conditional mining */
-		if (!wanna_mine(thr_id)) {
-
+		if (!wanna_mine(thr_id))
+		{
+			// reset default mem offset before idle..
+			if (need_nvsettings) nvs_reset_clocks(dev_id);
 			// free gpu resources
 			algo_free_all(thr_id);
 			// clear any free error (algo switch)
@@ -2021,7 +2090,11 @@ static void *miner_thread(void *userdata)
 			sleep(5);
 			if (!thr_id) pools[cur_pooln].wait_time += 5;
 			continue;
+		} else {
+			// reapply mem offset if needed
+			if (need_nvsettings) nvs_set_clocks(dev_id);
 		}
+
 		pool_on_hold = false;
 
 		work_restart[thr_id].restart = 0;
@@ -2126,6 +2199,7 @@ static void *miner_thread(void *userdata)
 			case ALGO_SIA:
 			case ALGO_SKEIN:
 			case ALGO_SKEIN2:
+			case ALGO_TRIBUS:
 				minmax = 0x1000000;
 				break;
 			case ALGO_C11:
@@ -2243,6 +2317,9 @@ static void *miner_thread(void *userdata)
 			break;
 		case ALGO_DEEP:
 			rc = scanhash_deep(thr_id, &work, max_nonce, &hashes_done);
+			break;
+		case ALGO_EQUIHASH:
+			rc = scanhash_equihash(thr_id, &work, max_nonce, &hashes_done);
 			break;
 		case ALGO_FRESH:
 			rc = scanhash_fresh(thr_id, &work, max_nonce, &hashes_done);
@@ -2362,6 +2439,9 @@ static void *miner_thread(void *userdata)
 		case ALGO_TIMETRAVEL:
 			rc = scanhash_timetravel(thr_id, &work, max_nonce, &hashes_done);
 			break;
+		case ALGO_TRIBUS:
+			rc = scanhash_tribus(thr_id, &work, max_nonce, &hashes_done);
+			break;
 		case ALGO_BITCORE:
 			rc = scanhash_bitcore(thr_id, &work, max_nonce, &hashes_done);
 			break;
@@ -2414,7 +2494,7 @@ static void *miner_thread(void *userdata)
 				work.nonces[1] = nonceptr[2];
 		}
 
-		if (stratum.rpc2 && rc == -EBUSY || work_restart[thr_id].restart) {
+		if (stratum.rpc2 && (rc == -EBUSY || work_restart[thr_id].restart)) {
 			// bbr scratchpad download or stale result
 			sleep(1);
 			if (!thr_id) pools[cur_pooln].wait_time += 1;
@@ -2472,7 +2552,7 @@ static void *miner_thread(void *userdata)
 		}
 
 		// only required to debug purpose
-		if (opt_debug && check_dups && opt_algo != ALGO_DECRED && opt_algo != ALGO_SIA)
+		if (opt_debug && check_dups && opt_algo != ALGO_DECRED && opt_algo != ALGO_EQUIHASH && opt_algo != ALGO_SIA)
 			hashlog_remember_scan_range(&work);
 
 		/* output */
@@ -2981,7 +3061,7 @@ void parse_arg(int key, char *arg)
 				opt_api_bind = strdup(arg);
 				opt_api_bind[p - arg] = '\0';
 			}
-			opt_api_listen = atoi(p + 1);
+			opt_api_port = atoi(p + 1);
 		}
 		else if (arg && strstr(arg, ".")) {
 			/* ip only */
@@ -2990,12 +3070,43 @@ void parse_arg(int key, char *arg)
 		}
 		else if (arg) {
 			/* port or 0 to disable */
-			opt_api_listen = atoi(arg);
+			opt_api_port = atoi(arg);
 		}
 		break;
 	case 1030: /* --api-remote */
-		opt_api_remote = 1;
+		if (opt_api_allow) free(opt_api_allow);
+		opt_api_allow = strdup("0/0");
 		break;
+	case 1031: /* --api-allow */
+		// --api-allow 0/0 means opened to all, so assume -b 0.0.0.0
+		if (!strcmp(arg, "0/0") && !strcmp(opt_api_bind, "127.0.0.1"))
+			parse_arg('b', (char*)"0.0.0.0");
+		if (opt_api_allow) free(opt_api_allow);
+		opt_api_allow = strdup(arg);
+		break;
+	case 1032: /* --api-groups */
+		if (opt_api_groups) free(opt_api_groups);
+		opt_api_groups = strdup(arg);
+		break;
+	case 1033: /* --api-mcast */
+		opt_api_mcast = true;
+		break;
+	case 1034: /* --api-mcast-addr */
+		free(opt_api_mcast_addr);
+		opt_api_mcast_addr = strdup(arg);
+	case 1035: /* --api-mcast-code */
+		free(opt_api_mcast_code);
+		opt_api_mcast_code = strdup(arg);
+		break;
+	case 1036: /* --api-mcast-des */
+		free(opt_api_mcast_des);
+		opt_api_mcast_des = strdup(arg);
+		break;
+	case 1037: /* --api-mcast-port */
+		v = atoi(arg);
+		if (v < 1 || v > 65535) // sanity check
+			show_usage_and_exit(1);
+		opt_api_mcast_port = v;
 	case 'B':
 		opt_background = true;
 		break;
@@ -3295,7 +3406,11 @@ void parse_arg(int key, char *arg)
 			int n = 0;
 			while (pch != NULL && n < MAX_GPUS) {
 				int dev_id = device_map[n++];
-				device_mem_clocks[dev_id] = atoi(pch);
+				if (*pch == '+' || *pch == '-')
+					device_mem_offsets[dev_id] = atoi(pch);
+				else
+					device_mem_clocks[dev_id] = atoi(pch);
+				need_nvsettings = true;
 				pch = strtok(NULL, ",");
 			}
 		}
@@ -3806,6 +3921,10 @@ int main(int argc, char *argv[])
 		allow_mininginfo = false;
 	}
 
+	if (opt_algo == ALGO_EQUIHASH) {
+		opt_extranonce = false; // disable subscribe
+	}
+
 	if (opt_algo == ALGO_CRYPTONIGHT || opt_algo == ALGO_CRYPTOLIGHT) {
 		rpc2_init();
 		if (!opt_quiet) applog(LOG_INFO, "Using JSON-RPC 2.0");
@@ -3963,6 +4082,13 @@ int main(int argc, char *argv[])
 		tq_push(thr_info[stratum_thr_id].q, strdup(rpc_url));
 	}
 
+#ifdef __linux__
+	if (need_nvsettings) {
+		if (nvs_init() < 0)
+			need_nvsettings = false;
+	}
+#endif
+
 #ifdef USE_WRAPNVML
 #if defined(__linux__) || defined(_WIN64)
 	/* nvml is currently not the best choice on Windows (only in x64) */
@@ -4006,7 +4132,7 @@ int main(int argc, char *argv[])
 	}
 #endif
 
-	if (opt_api_listen) {
+	if (opt_api_port) {
 		/* api thread */
 		api_thr_id = opt_n_threads + 3;
 		thr = &thr_info[api_thr_id];
