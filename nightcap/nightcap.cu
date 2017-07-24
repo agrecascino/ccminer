@@ -367,6 +367,7 @@ extern "C" int scanhash_nightcap(int thr_id, struct work* work, uint32_t max_non
 			if (vhash[7] <= Htarg && fulltest(vhash, ptarget)) {
 				work->valid_nonces = 1;
 				work_set_target_ratio(work, vhash);
+				gpulog(LOG_WARNING, thr_id, "nonce good!", work->nonces[0]);
 				if (work->nonces[1] != 0) {
 					be32enc(&endiandata[19], work->nonces[1]);
 					lyra2v2_hash(vhash, endiandata);
